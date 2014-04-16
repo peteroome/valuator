@@ -114,9 +114,14 @@ class Stock < ActiveRecord::Base
 
   def self.import_buyback_yield(data)
     puts "Importing Buyback Yield"
+    threads= []
     data.each do |stock|
-      import_single_buyback_yield(stock)
+      thread = Thread.new do 
+        import_single_buyback_yield(stock)
+      end
+      threads << thread
     end
+    threads.each { |t| t.join }
     puts "Completed Buyback Yield" 
   end
 
