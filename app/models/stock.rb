@@ -1,4 +1,5 @@
 require 'csv'
+require 'open-uri'
 
 class Stock < ActiveRecord::Base
 
@@ -6,7 +7,7 @@ class Stock < ActiveRecord::Base
     puts "Creating new snapshot"
     @stocks = []
     import_finviz(@stocks)
-    # import_evebitda(data)
+    import_evebitda(@stocks)
     import_buyback_yield(@stocks)
     # compute_rank(data)
     return @stocks
@@ -114,7 +115,7 @@ class Stock < ActiveRecord::Base
 
   def self.import_buyback_yield(data)
     puts "Importing Buyback Yield"
-    threads= []
+    threads = []
     data.each do |stock|
       thread = Thread.new do 
         import_single_buyback_yield(stock)
@@ -125,107 +126,91 @@ class Stock < ActiveRecord::Base
     puts "Completed Buyback Yield" 
   end
 
+  # http://query.yahooapis.com/v1/public/yql?q=select%20symbol,%20EnterpriseValueEBITDA.content%20from%20yahoo.finance.keystats%20where%20symbol%20in%20(%22TSLA%22,%22MSFT%22,%22APPL%22,%22SCTY%22)&env=store://datatables.org/alltableswithkeys&format=json
+  def self.import_evebitda(data)
+    puts "Importing EV/EBITDA"
+    
+    batch_size = 100
+    data.each_slice(batch_size) do |group|
+      tickers = group.collect {|g| g[:ticker]}
+      puts "Tickers: #{tickers.join(", ")}"
 
-  # OLD
-  # def import_buyback_yield(data, parallel=False):
-  #     print "Importing Buyback Yield"
-  #     if parallel:
-  #         pool = multiprocessing.Pool(4)
-  #         pool.map(import_single_buyback_yield, data.values())
-  #     else:
-  #         for stock in data:
-  #             stock = data[stock]
-  #             import_single_buyback_yield(stock)
-  #     print "Completed Buyback Yield" 
+      tickers = tickers.map { |s| "'#{s}'" }.join(', ')
+      query = "select symbol, EnterpriseValueEBITDA.content from yahoo.finance.keystats where symbol in (#{tickers})"
+      env = "store://datatables.org/alltableswithkeys"
+      format = "json"
+      url = URI::encode("http://query.yahooapis.com/v1/public/yql?q=#{query}&env=#{env}&format=#{format}")
+      response = HTTParty.get(url)
+      stats = response["query"]["results"]["stats"]
 
-  # def import_single_buyback_yield(stock):
-  #     done = False
-  #     while not done:
-  #         try:
-  #             print stock["Ticker"]
-  #             if not stock["MarketCap"]: break
-  #             query = "http://finance.yahoo.com/q/cf?s="+stock["Ticker"]+"&ql=1"
-  #             print query
-  #             r = requests.get(query, timeout=5)
-  #             html = r.text
-  #             # Repair html
-  #             html = html.replace('<div id="yucs-contextual_shortcuts"data-property="finance"data-languagetag="en-us"data-status="active"data-spaceid=""data-cobrand="standard">', '<div id="yucs-contextual_shortcuts" data-property="finance" data-languagetag="en-us" data-status="active" data-spaceid="" data-cobrand="standard">')
-  #             html = re.sub(r'(?<!\=)"">', '">', html)
-  #             soup = BeautifulSoup(html)
-  #             #with open("html.html", "w") as f:
-  #             #    f.write(html)
-  #             #with open("file.html", "w") as f:
-  #             #    f.write(soup.prettify())
-  #             table = soup.find("table", {"class": "yfnc_tabledata1"})
-  #             if not table: break
-  #             table = table.find("table")
-  #             if not table: break
-  #             sale = 0
-  #             for tr in table.findAll("tr"):
-  #                 title = tr.td.renderContents().strip()
-  #                 if title == "Sale Purchase of Stock":
-  #                     for td in tr.findAll("td")[1:]:
-  #                         val = td.renderContents().strip()
-  #                         val = val.replace("(", "-")
-  #                         val = val.replace(",", "")
-  #                         val = val.replace(")", "")
-  #                         val = val.replace("&nbsp;", "")
-  #                         val = val.replace("\n", "")
-  #                         val = val.replace("\t", "")
-  #                         val = val.replace("\\n", "")
-  #                         val = val.replace(" ", "")
-  #                         if val == "-": continue
-  #                         sale += int(val)*1000
-  #             stock["BB"] = -sale
-  #             print "BB: "+str(stock["BB"])
-  #             done = True
-  #             #print "done!"
-  #         except Exception as e:
-  #             print e
-  #             print "Trying again in 1 sec"
-  #             time.sleep(1)
+      puts stats.count
+      unless stats.blank?
+        stats.each do |row|
+          puts row["symbol"]
+          if row["EnterpriseValueEBITDA"] != "N/A"
+            puts "EVEBITDA: #{row["EnterpriseValueEBITDA"]}"
+            stock = data.find {|stock| stock[:ticker] == row["symbol"] }
+            stock[:evebitda] = row["EnterpriseValueEBITDA"].to_f
+          end
+        end
+      else
+        puts "No stats."
+      end
+    end
+    puts "EV/EBITDA imported"
+  end
 
-  # def import_evebitda(data)
-  #   puts "Importing EV/EBITDA"
-  #   y = yql.Public()
-  #   step=100
-  #   tickers = data.keys
-  #   tickers.each do |ticker|
+  def compute_rank(data, step=0)
+    compute_perank(data) if step == 0
+    compute_psrank(data) if step <=1
+    compute_pbrank(data) if step <=2
+    compute_pfcfrank(data) if step <=3
+    compute_bby(data) if step <=4
+    compute_shy(data) if step <=5
+    compute_shyrank(data) if step <=6
+    compute_evebitdarank(data) if step <=7
+    set_mediums(data) if step <=8
+    compute_stockrank(data) if step <=9
+    compute_overallrank(data) if step <=10
+    puts "Rank Computed!"
+  end
 
-  #   for i in range(0,len(tickers),step):
-  #       print "From " + tickers[i] + " to " + tickers[min(i+step,len(tickers))-1]
-  #       nquery = 'select symbol, EnterpriseValueEBITDA.content from yahoo.finance.keystats where symbol in ({0})'.format('"'+('","'.join(tickers[i:i+step-1])+'"'))
-  #       ebitdas = y.execute(nquery, env="http://www.datatables.org/alltables.env")
-  #       if ebitdas.results:
-  #           for row in ebitdas.results["stats"]:
-  #               print row["symbol"]
-  #               if "EnterpriseValueEBITDA" in row and row["EnterpriseValueEBITDA"] and row["EnterpriseValueEBITDA"] != "N/A":
-  #                   print "EVEBITDA: " + row["EnterpriseValueEBITDA"]
-  #                   data[row["symbol"]]["EVEBITDA"] = row["EnterpriseValueEBITDA"]
-  #       else:
-  #           pass
-  #           print "No results"
-  #   print "EV/EBITDA imported"
+  # def compute_somerank(data, key, origkey=None, reverse=True, filterpositive=False):
+  #   print "Computing " + key + " rank"
+  #   if not origkey:
+  #     origkey = key
+  #     i = 0
+  #     value = None
+  #     stocks = sorted([stock for stock in data.values() if origkey in stock and (not filterpositive or stock[origkey] >= 0)], key=lambda k: k[origkey], reverse=reverse)
+  #     amt = len(stocks)
+  #     for stock in stocks:
+  #         print stock["Ticker"]
+  #         if stock[origkey] != value:
+  #             last_rank = i
+  #             value = stock[origkey]
+  #         stock[key+"Rank"] = Decimal(last_rank)/amt*100
+  #         print key+"Rank: " + str(stock[key+"Rank"])
+  #         i +=1
+  #       enmd
+  #     print "Computed " + key + " Rank"
   # end
 
   # OLD
-  # def import_evebitda(data):
-  #   print "Importing EV/EBITDA"
-  #   y = yql.Public()
-  #   step=100
-  #   tickers = data.keys()
-  #   for i in range(0,len(tickers),step):
-  #       print "From " + tickers[i] + " to " + tickers[min(i+step,len(tickers))-1]
-  #       nquery = 'select symbol, EnterpriseValueEBITDA.content from yahoo.finance.keystats where symbol in ({0})'.format('"'+('","'.join(tickers[i:i+step-1])+'"'))
-  #       ebitdas = y.execute(nquery, env="http://www.datatables.org/alltables.env")
-  #       if ebitdas.results:
-  #           for row in ebitdas.results["stats"]:
-  #               print row["symbol"]
-  #               if "EnterpriseValueEBITDA" in row and row["EnterpriseValueEBITDA"] and row["EnterpriseValueEBITDA"] != "N/A":
-  #                   print "EVEBITDA: " + row["EnterpriseValueEBITDA"]
-  #                   data[row["symbol"]]["EVEBITDA"] = row["EnterpriseValueEBITDA"]
-  #       else:
-  #           pass
-  #           print "No results"
-  #   print "EV/EBITDA imported"
+  # def compute_somerank(data, key, origkey=None, reverse=True, filterpositive=False):
+  #     print "Computing " + key + " rank"
+  #     if not origkey:
+  #         origkey = key
+  #     i = 0
+  #     value = None
+  #     stocks = sorted([stock for stock in data.values() if origkey in stock and (not filterpositive or stock[origkey] >= 0)], key=lambda k: k[origkey], reverse=reverse)
+  #     amt = len(stocks)
+  #     for stock in stocks:
+  #         print stock["Ticker"]
+  #         if stock[origkey] != value:
+  #             last_rank = i
+  #             value = stock[origkey]
+  #         stock[key+"Rank"] = Decimal(last_rank)/amt*100
+  #         print key+"Rank: " + str(stock[key+"Rank"])
+  #         i +=1
+  #     print "Computed " + key + " Rank"
 end
