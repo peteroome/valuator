@@ -3,14 +3,20 @@ require 'open-uri'
 
 class Stock < ActiveRecord::Base
 
-  def self.generate_snapshot
-    puts "Creating new snapshot"
+  def self.generate_snapshot_to_csv
     @stocks = []
-    import_finviz(@stocks)
-    import_evebitda(@stocks)
-    import_buyback_yield(@stocks)
-    # compute_rank(data)
-    return @stocks
+    generate_snapshot(@stocks)
+    to_csv(@stocks)
+  end
+
+  def self.generate_snapshot(data)
+    puts "Creating new snapshot"
+    import_finviz(data)
+    import_evebitda(data)
+    import_buyback_yield(data)
+    compute_rank(data)
+    puts data[0..10]
+    return data
   end
 
   def self.import_finviz(processed_stocks)
@@ -160,57 +166,151 @@ class Stock < ActiveRecord::Base
     puts "EV/EBITDA imported"
   end
 
-  def compute_rank(data, step=0)
-    compute_perank(data) if step == 0
-    compute_psrank(data) if step <=1
-    compute_pbrank(data) if step <=2
-    compute_pfcfrank(data) if step <=3
-    compute_bby(data) if step <=4
-    compute_shy(data) if step <=5
-    compute_shyrank(data) if step <=6
-    compute_evebitdarank(data) if step <=7
-    set_mediums(data) if step <=8
-    compute_stockrank(data) if step <=9
-    compute_overallrank(data) if step <=10
+  def self.compute_rank(data, step = 0)
+    compute_perank(data)
+    # compute_psrank(data)
+    # compute_pbrank(data)
+    # compute_pfcfrank(data)
+    # compute_bby(data)
+    # compute_shy(data)
+    # compute_shyrank(data)
+    # compute_evebitdarank(data)
+    # set_mediums(data)
+    # compute_stockrank(data)
+    # compute_overallrank(data)
     puts "Rank Computed!"
   end
 
-  # def compute_somerank(data, key, origkey=None, reverse=True, filterpositive=False):
-  #   print "Computing " + key + " rank"
-  #   if not origkey:
-  #     origkey = key
-  #     i = 0
-  #     value = None
-  #     stocks = sorted([stock for stock in data.values() if origkey in stock and (not filterpositive or stock[origkey] >= 0)], key=lambda k: k[origkey], reverse=reverse)
-  #     amt = len(stocks)
-  #     for stock in stocks:
-  #         print stock["Ticker"]
-  #         if stock[origkey] != value:
-  #             last_rank = i
-  #             value = stock[origkey]
-  #         stock[key+"Rank"] = Decimal(last_rank)/amt*100
-  #         print key+"Rank: " + str(stock[key+"Rank"])
-  #         i +=1
-  #       enmd
-  #     print "Computed " + key + " Rank"
-  # end
+  def self.compute_somerank(data, key, origkey = nil, reverse = true, filterpositive = false)
+    puts "Computing #{key} rank"
+    if origkey.nil?
+      origkey = key
+      i = 0
+      value = nil
+    
+      puts "#{stock[origkey]}"
+      puts "#{key} Blank: #{stock[origkey].blank?}"
+      puts "filterpositive: #{filterpositive}"
 
-  # OLD
-  # def compute_somerank(data, key, origkey=None, reverse=True, filterpositive=False):
-  #     print "Computing " + key + " rank"
-  #     if not origkey:
-  #         origkey = key
-  #     i = 0
-  #     value = None
-  #     stocks = sorted([stock for stock in data.values() if origkey in stock and (not filterpositive or stock[origkey] >= 0)], key=lambda k: k[origkey], reverse=reverse)
-  #     amt = len(stocks)
-  #     for stock in stocks:
-  #         print stock["Ticker"]
-  #         if stock[origkey] != value:
-  #             last_rank = i
-  #             value = stock[origkey]
-  #         stock[key+"Rank"] = Decimal(last_rank)/amt*100
-  #         print key+"Rank: " + str(stock[key+"Rank"])
-  #         i +=1
-  #     print "Computed " + key + " Rank"
+      data = data.reject {|stock| stock[origkey].blank? && (filterpositive == false || stock[origkey] >= 0)}
+      data = data.sort {|x,y| y[origkey] <=> x[origkey] }
+      data.reverse if reverse == true
+
+      amount = data.length
+      puts "Amount: #{amount}"
+      data.each do |stock|
+        puts stock[:ticker]
+        if stock[origkey] != value
+          last_rank = i
+          value = stock[origkey]
+        end
+        new_key = "#{key.to_s}_rank".parameterize.underscore.to_sym
+        stock[new_key] = (last_rank.to_f/amount)*100
+        puts "#{new_key}: #{stock[new_key]}"
+        i +=1
+      end
+    end
+    puts "Computed #{key} rank"
+  end
+
+  def self.compute_perank(data)
+    compute_somerank(data, :pe)
+  end
+
+  def self.compute_psrank(data)
+    compute_somerank(data, :ps)
+  end
+
+  def self.compute_pbrank(data)
+    compute_somerank(data, :pb)
+  end
+
+  def self.compute_pfcfrank(data)
+    compute_somerank(data, :pfcf, :p_free_cash_flow)
+  end
+
+  def self.compute_bby(data)
+    puts "Computing BBY"
+    data = data.reject {|stock| stock[:bb].blank? && stock[:market_cap].blank?}
+    data.each do |stock|
+      puts stock[:ticker]
+      stock[:bby] = -stock[:bb].to_f/(stock[:market_cap].to_f*1000000)*100
+      puts "BBY: #{stock[:bby]}"
+    end
+    puts "Done computing BBY"
+  end
+
+  def self.compute_shy(data)
+    puts "Computing SHY"
+    data.each do |stock|
+      puts stock[:ticker]
+      stock[:shy] = 0
+      puts "DY: #{stock[:dividend_yield]}"
+      puts "BBY: #{stock[:bby]}"
+
+      unless stock[:dividend_yield].blank?
+        stock[:shy] += stock[:dividend_yield].to_f
+      end
+
+      unless stock[:bby].blank?
+        stock[:shy] += stock[:bby].to_f
+      end
+
+      puts "SHY: #{stock["SHY"]}"
+    end
+    puts "Done computing SHY"
+  end
+
+  def self.compute_shyrank(data)
+    compute_somerank(data, :shy, reverse = false)
+  end
+
+  def self.compute_evebitdarank(data)
+    compute_somerank(data, :evebitda, filterpositive = true)
+  end
+
+  def self.set_mediums(data)
+    puts "Setting Mediums"
+    data.each do |stock|
+      [:pe, :ps, :pb, :pfcf, :evebitda].each do |key|
+        key_rank = "#{key.to_s}_rank".parameterize.underscore.to_sym
+        unless stock[key_rank].blank?
+          stock[key_rank] = 50
+        end
+
+        if !stock[:evebitda].blank? && stock[:evebitda] < 0
+          stock[:evebitda_rank] = 50
+        end
+      end
+    end
+    puts "Done setting Mediums"
+  end
+
+  def self.compute_stockrank(data)
+    puts "Computing stock rank"
+    data.each do |stock|
+      puts stock[:ticker]
+      ranks = [stock[:pe_rank], stock[:ps_rank], stock[:pbr_rank], stock[:pfcf_rank], stock[:shy_rank], stock[:evebitda_rank]].map(&:to_f)
+
+      # Sum ranks
+      stock[:rank] = ranks.inject(:+)
+      puts "Rank: #{stock[:rank]}"
+    end
+  end
+
+  def self.compute_overallrank(data)
+    puts "Computing Overall rank"
+    compute_somerank(data, :ovr, origkey = :rank, reverse = false)
+  end
+
+  def self.to_csv(data)
+    column_names = data.first.keys
+    file =  CSV.generate do |csv|
+      csv << column_names
+      data.each do |stock|
+        csv << stock.values
+      end
+    end
+    File.write('./csvs/stocks.csv', file)
+  end
 end
