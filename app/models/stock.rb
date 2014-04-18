@@ -47,9 +47,9 @@ class Stock < ActiveRecord::Base
             industry:               row[:industry],
             country:                row[:country],
             market_cap:             row[:market_cap],
-            p_e:                    row[:p_e].to_f,
-            p_s:                    row[:p_s].to_f,
-            p_b:                    row[:p_b].to_f,
+            pe:                     row[:p_e].to_f,
+            ps:                     row[:p_s].to_f,
+            pb:                     row[:p_b].to_f,
             p_free_cash_flow:       row[:p_free_cash_flow].to_f,
             dividend_yield:         row[:dividend_yield].to_s.chop!.to_f,
             performance_half_year:  row[:performance_half_year].to_s.chop!.to_f,
@@ -106,7 +106,7 @@ class Stock < ActiveRecord::Base
           end
 
           stock[:bb] = -sale
-          puts "BB: #{stock[:bb]}"
+          puts "BB: #{stock[:ticker]} - #{stock[:bb]}"
           done = true
         end
       rescue Exception => e
@@ -168,16 +168,16 @@ class Stock < ActiveRecord::Base
 
   def self.compute_rank(data, step = 0)
     compute_perank(data)
-    # compute_psrank(data)
-    # compute_pbrank(data)
-    # compute_pfcfrank(data)
-    # compute_bby(data)
-    # compute_shy(data)
-    # compute_shyrank(data)
-    # compute_evebitdarank(data)
-    # set_mediums(data)
-    # compute_stockrank(data)
-    # compute_overallrank(data)
+    compute_psrank(data)
+    compute_pbrank(data)
+    compute_pfcfrank(data)
+    compute_bby(data)
+    compute_shy(data)
+    compute_shyrank(data)
+    compute_evebitdarank(data)
+    set_mediums(data)
+    compute_stockrank(data)
+    compute_overallrank(data)
     puts "Rank Computed!"
   end
 
@@ -188,12 +188,15 @@ class Stock < ActiveRecord::Base
       i = 0
       value = nil
     
-      puts "#{stock[origkey]}"
-      puts "#{key} Blank: #{stock[origkey].blank?}"
       puts "filterpositive: #{filterpositive}"
 
-      data = data.reject {|stock| stock[origkey].blank? && (filterpositive == false || stock[origkey] >= 0)}
-      data = data.sort {|x,y| y[origkey] <=> x[origkey] }
+      data = data.reject {|stock| 
+        puts "#{stock[origkey]}"
+        puts "#{key} Blank: #{stock[origkey].blank?}"
+        stock[origkey].blank? && (filterpositive == false || stock[origkey] >= 0)
+      }
+
+      data = data.sort_by { |k| k[origkey] }
       data.reverse if reverse == true
 
       amount = data.length
@@ -205,6 +208,7 @@ class Stock < ActiveRecord::Base
           value = stock[origkey]
         end
         new_key = "#{key.to_s}_rank".parameterize.underscore.to_sym
+        puts "New Key: #{new_key}"
         stock[new_key] = (last_rank.to_f/amount)*100
         puts "#{new_key}: #{stock[new_key]}"
         i +=1
@@ -248,11 +252,11 @@ class Stock < ActiveRecord::Base
       puts "DY: #{stock[:dividend_yield]}"
       puts "BBY: #{stock[:bby]}"
 
-      unless stock[:dividend_yield].blank?
+      if !stock[:dividend_yield].blank?
         stock[:shy] += stock[:dividend_yield].to_f
       end
 
-      unless stock[:bby].blank?
+      if !stock[:bby].blank?
         stock[:shy] += stock[:bby].to_f
       end
 
@@ -274,7 +278,8 @@ class Stock < ActiveRecord::Base
     data.each do |stock|
       [:pe, :ps, :pb, :pfcf, :evebitda].each do |key|
         key_rank = "#{key.to_s}_rank".parameterize.underscore.to_sym
-        unless stock[key_rank].blank?
+        puts "Key rank: #{key_rank}"
+        if stock[key_rank].blank?
           stock[key_rank] = 50
         end
 
