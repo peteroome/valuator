@@ -183,37 +183,37 @@ class Stock < ActiveRecord::Base
 
   def self.compute_somerank(data, key, origkey = nil, reverse = true, filterpositive = false)
     puts "Computing #{key} rank"
-    if origkey.nil?
-      origkey = key
-      i = 0
-      value = nil
     
-      puts "filterpositive: #{filterpositive}"
+    origkey = key if origkey.nil?
 
-      data = data.reject {|stock| 
-        puts "#{stock[origkey]}"
-        puts "#{key} Blank: #{stock[origkey].blank?}"
-        stock[origkey].blank? && (filterpositive == false || stock[origkey] >= 0)
-      }
+    i = 0
+    value = nil
+  
+    puts "filterpositive: #{filterpositive}"
+    data = data.reject {|stock| 
+      puts "#{stock[origkey]}"
+      puts "#{key} Blank: #{stock[origkey].blank?}"
+      stock[origkey].blank? && (filterpositive == false || stock[origkey] >= 0)
+    }
 
-      data = data.sort_by { |k| k[origkey] }
-      data.reverse if reverse == true
+    data = data.sort_by { |k| k[origkey] }
+    data.reverse if reverse == true
 
-      amount = data.length
-      puts "Amount: #{amount}"
-      data.each do |stock|
-        puts stock[:ticker]
-        if stock[origkey] != value
-          last_rank = i
-          value = stock[origkey]
-        end
-        new_key = "#{key.to_s}_rank".parameterize.underscore.to_sym
-        puts "New Key: #{new_key}"
-        stock[new_key] = (last_rank.to_f/amount)*100
-        puts "#{new_key}: #{stock[new_key]}"
-        i +=1
+    amount = data.length
+    puts "Amount: #{amount}"
+    data.each do |stock|
+      puts stock[:ticker]
+      if stock[origkey] != value
+        last_rank = i
+        value = stock[origkey]
       end
+      new_key = "#{key.to_s}_rank".parameterize.underscore.to_sym
+      puts "New Key: #{new_key}"
+      stock[new_key] = (last_rank.to_f/amount)*100
+      puts "#{new_key}: #{stock[new_key]}"
+      i +=1
     end
+    
     puts "Computed #{key} rank"
   end
 
@@ -238,7 +238,7 @@ class Stock < ActiveRecord::Base
     data = data.reject {|stock| stock[:bb].blank? && stock[:market_cap].blank?}
     data.each do |stock|
       puts stock[:ticker]
-      stock[:bby] = -stock[:bb].to_f/(stock[:market_cap].to_f*1000000)*100
+      stock[:bby] = -((stock[:bb].to_f/(stock[:market_cap].to_f*1000000))*100)
       puts "BBY: #{stock[:bby]}"
     end
     puts "Done computing BBY"
@@ -252,11 +252,11 @@ class Stock < ActiveRecord::Base
       puts "DY: #{stock[:dividend_yield]}"
       puts "BBY: #{stock[:bby]}"
 
-      if !stock[:dividend_yield].blank?
+      unless stock[:dividend_yield].blank?
         stock[:shy] += stock[:dividend_yield].to_f
       end
 
-      if !stock[:bby].blank?
+      unless stock[:bby].blank?
         stock[:shy] += stock[:bby].to_f
       end
 
@@ -295,7 +295,8 @@ class Stock < ActiveRecord::Base
     puts "Computing stock rank"
     data.each do |stock|
       puts stock[:ticker]
-      ranks = [stock[:pe_rank], stock[:ps_rank], stock[:pbr_rank], stock[:pfcf_rank], stock[:shy_rank], stock[:evebitda_rank]].map(&:to_f)
+      ranks = [stock[:pe_rank], stock[:ps_rank], stock[:pb_rank], stock[:pfcf_rank], stock[:shy_rank], stock[:evebitda_rank]].map(&:to_f)
+      puts "Ranks: #{ranks}"
 
       # Sum ranks
       stock[:rank] = ranks.inject(:+)
