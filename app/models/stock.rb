@@ -203,17 +203,19 @@ class Stock < ActiveRecord::Base
     puts "Amount: #{amount}"
     data.each do |stock|
       puts stock[:ticker]
+      puts "#{stock[origkey]} - #{value}"
       if stock[origkey] != value
+        puts "i: #{i}"
         last_rank = i
         value = stock[origkey]
       end
       new_key = "#{key.to_s}_rank".parameterize.underscore.to_sym
       puts "New Key: #{new_key}"
-      stock[new_key] = (last_rank.to_f/amount)*100
+      stock[new_key] = (last_rank.to_f/amount.to_f)*100
       puts "#{new_key}: #{stock[new_key]}"
       i +=1
     end
-    
+
     puts "Computed #{key} rank"
   end
 
@@ -296,7 +298,6 @@ class Stock < ActiveRecord::Base
     data.each do |stock|
       puts stock[:ticker]
       ranks = [stock[:pe_rank], stock[:ps_rank], stock[:pb_rank], stock[:pfcf_rank], stock[:shy_rank], stock[:evebitda_rank]].map(&:to_f)
-      puts "Ranks: #{ranks}"
 
       # Sum ranks
       stock[:rank] = ranks.inject(:+)
