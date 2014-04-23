@@ -6,8 +6,9 @@ The script pulls data from various sources, ranks the stocks on various figures 
 before spitting out a csv of the stocks.
 
 ## How to run
-bundle install
-ruby trending-value-stocks.rb
+Install the required gems.
+
+`ruby trending-value-stocks.rb`
 
 ### Credits
 This script is based on the Python script by [@fuligginoso](http://blog.nmr.io/). 
