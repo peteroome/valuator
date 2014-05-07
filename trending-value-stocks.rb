@@ -17,7 +17,7 @@ def generate_snapshot(data)
   puts "Creating new snapshot"
   import_finviz(data)
   import_evebitda(data)
-  import_buyback_yield(data)
+  import_buyback_yield(data, false)
   compute_rank(data)
   puts data[0..10]
   return data
@@ -55,8 +55,8 @@ def import_finviz(processed_stocks)
           ps:                     row[:p_s].to_f,
           pb:                     row[:p_b].to_f,
           p_free_cash_flow:       row[:p_free_cash_flow].to_f,
-          dividend_yield:         row[:dividend_yield].to_s.chop!.to_f,
-          performance_half_year:  row[:performance_half_year].to_s.chop!.to_f,
+          dividend_yield:         row[:dividend_yield].to_s.strip!.to_f,
+          performance_half_year:  row[:performance_half_year].to_s.strip!.to_f,
           price:                  row[:price].to_f
         }
       end      
@@ -81,9 +81,6 @@ def import_single_buyback_yield(stock)
 
       # Repair html
       table = html.css('table.yfnc_tabledata1')[0]
-      return unless table
-
-      table = html.css("table")[0]
       return unless table
 
       sale = 0
@@ -123,16 +120,24 @@ def import_single_buyback_yield(stock)
   end
 end
 
-def import_buyback_yield(data)
+def import_buyback_yield(data, threaded = true)
   puts "Importing Buyback Yield"
-  threads = []
-  data.each do |stock|
-    thread = Thread.new do 
+
+  if threaded == true
+    threads = []
+    data.each do |stock|
+      thread = Thread.new do 
+        import_single_buyback_yield(stock)
+      end
+      threads << thread
+    end
+    threads.each { |t| t.join }
+  else
+    data.each do |stock|
       import_single_buyback_yield(stock)
     end
-    threads << thread
   end
-  threads.each { |t| t.join }
+
   puts "Completed Buyback Yield" 
 end
 
