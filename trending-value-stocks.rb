@@ -35,7 +35,7 @@ def import_finviz(processed_stocks)
     response = CSV.parse(response)
 
     keys = response.delete_at(0).collect { |k| k.parameterize.underscore.to_sym }
-    response = response.map {|a| Hash[ keys.zip(a) ] }
+    response = response.map {|a| Hash[keys.zip(a)] }
 
     response.each do |row|
       # Field labels
@@ -55,8 +55,8 @@ def import_finviz(processed_stocks)
           ps:                     row[:p_s].to_f,
           pb:                     row[:p_b].to_f,
           p_free_cash_flow:       row[:p_free_cash_flow].to_f,
-          dividend_yield:         row[:dividend_yield].to_s.strip!.to_f,
-          performance_half_year:  row[:performance_half_year].to_s.strip!.to_f,
+          dividend_yield:         row[:dividend_yield].to_s.gsub("%", "").to_f,
+          performance_half_year:  row[:performance_half_year].to_s.gsub("%", "").to_f,
           price:                  row[:price].to_f
         }
       end      
@@ -199,14 +199,15 @@ def compute_somerank(data, key, origkey = nil, reverse = true, filterpositive = 
   value = nil
 
   puts "filterpositive: #{filterpositive}"
+
   data = data.reject {|stock| 
     puts "#{stock[origkey]}"
     puts "#{key} Blank: #{stock[origkey].blank?}"
     stock[origkey].blank? && (filterpositive == false || stock[origkey] >= 0)
   }
 
-  data = data.sort_by { |k| k[origkey] }
-  data.reverse if reverse == true
+  data = data.sort_by! { |k| k[origkey] }
+  data.reverse! if reverse == true
 
   amount = data.length
   puts "Amount: #{amount}"

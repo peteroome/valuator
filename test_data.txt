@@ -1,0 +1,21 @@
+stock = {
+  ticker:                 "LNKD",
+  company:                "LinkedIn Inc.",
+  market_cap:             17987.6,
+  pe:                     777.53,
+  ps:                     11.77,
+  pb:                     6.74,
+  p_free_cash_flow:       129.13,
+  dividend_yield:         0,
+  performance_half_year:  -34.08,
+  price:                  150.91,
+  evebitda:               93.62,
+}
+
+bb: -1410072000
+
+data = [
+  {name: "a", value: "1"},
+  {name: "c", value: "3"},
+  {name: "b", value: "2"}
+]
