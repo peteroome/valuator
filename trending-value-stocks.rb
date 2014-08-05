@@ -6,25 +6,21 @@ require 'nokogiri'
 require 'csv'
 require 'open-uri'
 require 'active_support'
-
-def generate_snapshot_to_csv
-  @stocks = []
-  generate_snapshot(@stocks)
-  to_csv(@stocks)
-end
+require 'pry'
+require 'fileutils'
+require 'ruby-progressbar'
+require 'thread/pool'
+require 'builder'
 
 def generate_snapshot(data)
-  puts "Creating new snapshot"
   import_finviz(data)
-  import_evebitda(data)
-  import_buyback_yield(data, false)
+  import_evebitda(data, true)
+  import_buyback_yield(data, true)
   compute_rank(data)
-  puts data[0..10]
   return data
 end
 
 def import_finviz(processed_stocks)
-  puts "Importing data from finviz"
   # not using f=cap_smallover since it filters market caps over 300M instead of 200M
   # r = requests.get('http://finviz.com/export.ashx?v=152', cookies={"screenerUrl": "screener.ashx?v=152&f=cap_smallover&ft=4", "customTable": "0,1,2,6,7,10,11,13,14,45,65"})
   # r = requests.get('http://finviz.com/export.ashx?v=152', cookies={"screenerUrl": "screener.ashx?v=152&ft=4", "customTable": "0,1,2,6,7,10,11,13,14,45,65"})
@@ -32,7 +28,7 @@ def import_finviz(processed_stocks)
   begin
     url = 'http://finviz.com/export.ashx?v=152&ft=4&c=0,1,2,3,4,5,6,7,10,11,13,14,45,65'
     response = HTTParty.get(url)
-    response = CSV.parse(response)
+    response = CSV.parse(response.body)
 
     keys = response.delete_at(0).collect { |k| k.parameterize.underscore.to_sym }
     response = response.map {|a| Hash[keys.zip(a)] }
@@ -40,10 +36,7 @@ def import_finviz(processed_stocks)
     response.each do |row|
       # Field labels
       # [:no, :ticker, :company, :sector, :industry, :country, :market_cap, :p_e, :price]
-      puts row[:ticker]
-      if row[:market_cap].to_f < 200
-        puts "Market Cap too small: #{row[:market_cap]}"
-      else
+      unless row[:market_cap].to_f < 200
         processed_stocks << {
           ticker:                 row[:ticker],
           company:                row[:company],
@@ -59,9 +52,9 @@ def import_finviz(processed_stocks)
           performance_half_year:  row[:performance_half_year].to_s.gsub("%", "").to_f,
           price:                  row[:price].to_f
         }
-      end      
+      end
     end
-    puts "Finviz data imported"
+    puts "Finviz data imported (#{processed_stocks.count} stocks)"
   rescue Exception => e
     puts e.message
     puts e.backtrace.inspect
@@ -72,10 +65,9 @@ def import_single_buyback_yield(stock)
   done = false
   while done == false
     begin
-      puts stock[:ticker]
+      # puts stock[:ticker]
       return if stock[:market_cap].blank?
       query = "http://finance.yahoo.com/q/cf?s=#{stock[:ticker]}&ql=1"
-      puts query
       response = HTTParty.get(query)
       html = Nokogiri::HTML(response)
 
@@ -100,14 +92,14 @@ def import_single_buyback_yield(stock)
             val = val.gsub("\t", "")
             val = val.gsub("\\n", "")
             val = val.gsub(" ", "")
-            
+
             return if val == "-"
             sale += val.to_i*1000
           end
         end
 
         stock[:bb] = -sale
-        puts "BB: #{stock[:ticker]} - #{stock[:bb]}"
+        # puts "BB: #{stock[:ticker]} - #{stock[:bb]}"
         done = true
       end
     rescue Exception => e
@@ -121,148 +113,125 @@ def import_single_buyback_yield(stock)
 end
 
 def import_buyback_yield(data, threaded = true)
-  puts "Importing Buyback Yield"
+  puts "\n"
+  progress_bar = ProgressBar.create(title: "Importing Buyback Yield", starting_at: 0, total: data.count)
 
-  if threaded == true
-    threads = []
+  if threaded
+    pool = Thread.pool(30)
     data.each do |stock|
-      thread = Thread.new do 
+      pool.process {
+        progress_bar.increment
+
         import_single_buyback_yield(stock)
-      end
-      threads << thread
+      }
     end
-    threads.each { |t| t.join }
+    pool.shutdown
   else
     data.each do |stock|
+      progress_bar.increment
+
       import_single_buyback_yield(stock)
     end
   end
+end
 
-  puts "Completed Buyback Yield" 
+def process_evebitda_batch(data, batch)
+  tickers = batch.collect {|g| g[:ticker]}
+  tickers = tickers.map { |s| "'#{s}'" }.join(', ')
+
+  query = "select symbol, EnterpriseValueEBITDA.content from yahoo.finance.keystats where symbol in (#{tickers})"
+  env = "store://datatables.org/alltableswithkeys"
+  url = URI::encode("http://query.yahooapis.com/v1/public/yql?q=#{query}&env=#{env}&format=json")
+  response = HTTParty.get(url)
+  stats = response["query"]["results"]["stats"]
+
+  unless stats.blank?
+    stats.each do |row|
+      if row["EnterpriseValueEBITDA"] != "N/A"
+        stock = data.find {|stock| stock[:ticker] == row["symbol"] }
+        stock[:evebitda] = row["EnterpriseValueEBITDA"].to_f
+      end
+    end
+  end
 end
 
 # http://query.yahooapis.com/v1/public/yql?q=select%20symbol,%20EnterpriseValueEBITDA.content%20from%20yahoo.finance.keystats%20where%20symbol%20in%20(%22TSLA%22,%22MSFT%22,%22APPL%22,%22SCTY%22)&env=store://datatables.org/alltableswithkeys&format=json
-def import_evebitda(data)
-  puts "Importing EV/EBITDA"
-  
-  batch_size = 100
-  data.each_slice(batch_size) do |group|
-    tickers = group.collect {|g| g[:ticker]}
-    puts "Tickers: #{tickers.join(", ")}"
+def import_evebitda(data, threaded = true, batch_size = 100)
+  progress_bar = ProgressBar.create(title: "Importing EV/EBITDA Data", starting_at: 0, total: data.count)
 
-    tickers = tickers.map { |s| "'#{s}'" }.join(', ')
-    query = "select symbol, EnterpriseValueEBITDA.content from yahoo.finance.keystats where symbol in (#{tickers})"
-    env = "store://datatables.org/alltableswithkeys"
-    format = "json"
-    url = URI::encode("http://query.yahooapis.com/v1/public/yql?q=#{query}&env=#{env}&format=#{format}")
-    response = HTTParty.get(url)
-    stats = response["query"]["results"]["stats"]
+  pool = Thread.pool(10) if threaded
 
-    puts stats.count
-    unless stats.blank?
-      stats.each do |row|
-        puts row["symbol"]
-        if row["EnterpriseValueEBITDA"] != "N/A"
-          puts "EVEBITDA: #{row["EnterpriseValueEBITDA"]}"
-          stock = data.find {|stock| stock[:ticker] == row["symbol"] }
-          stock[:evebitda] = row["EnterpriseValueEBITDA"].to_f
-        end
-      end
+  data.each_slice(batch_size) do |batch|
+    if threaded
+      pool.process {
+        progress_bar.progress += batch_size
+        process_evebitda_batch(data, batch)
+      }
     else
-      puts "No stats."
+      process_evebitda_batch(data, batch)
+      progress_bar.progress += batch_size
     end
   end
-  puts "EV/EBITDA imported"
+
+  pool.shutdown if threaded
 end
 
 def compute_rank(data, step = 0)
-  compute_perank(data)
-  compute_psrank(data)
-  compute_pbrank(data)
-  compute_pfcfrank(data)
+  compute_somerank(data, :pe)
+  compute_somerank(data, :ps)
+  compute_somerank(data, :pb)
+  compute_somerank(data, :pfcf, :p_free_cash_flow)
   compute_bby(data)
   compute_shy(data)
-  compute_shyrank(data)
-  compute_evebitdarank(data)
+  compute_somerank(data, :shy, reverse = false)
+  compute_somerank(data, :evebitda, filterpositive = true)
   set_mediums(data)
   compute_stockrank(data)
-  compute_overallrank(data)
-  puts "Rank Computed!"
+  compute_somerank(data, :ovr, origkey = :rank, reverse = false)
 end
 
 def compute_somerank(data, key, origkey = nil, reverse = true, filterpositive = false)
-  puts "Computing #{key} rank"
-  
   origkey = key if origkey.nil?
 
-  i = 0
-  value = nil
-
-  puts "filterpositive: #{filterpositive}"
-
-  data = data.reject {|stock| 
-    puts "#{stock[origkey]}"
-    puts "#{key} Blank: #{stock[origkey].blank?}"
-    stock[origkey].blank? && (filterpositive == false || stock[origkey] >= 0)
-  }
-
+  # reject nil values
+  data = data.reject {|stock| stock[origkey].blank? && (filterpositive == false || stock[origkey] >= 0) }
   data = data.sort_by! { |k| k[origkey] }
   data.reverse! if reverse == true
 
   amount = data.length
-  puts "Amount: #{amount}"
+
+  progress_bar = ProgressBar.create(title: "Computing #{key.upcase} Rank", starting_at: 0, total: data.count)
+
+  i = 0
+  value = nil
+
   data.each do |stock|
-    puts stock[:ticker]
-    puts "#{stock[origkey]} - #{value}"
     if stock[origkey] != value
-      puts "i: #{i}"
       last_rank = i
       value = stock[origkey]
     end
     new_key = "#{key.to_s}_rank".parameterize.underscore.to_sym
-    puts "New Key: #{new_key}"
-    stock[new_key] = (last_rank.to_f/amount.to_f)*100
-    puts "#{new_key}: #{stock[new_key]}"
-    i +=1
+    stock[new_key] = (last_rank.to_f / amount.to_f)*100
+    i += 1
+    progress_bar.increment
   end
-
-  puts "Computed #{key} rank"
-end
-
-def compute_perank(data)
-  compute_somerank(data, :pe)
-end
-
-def compute_psrank(data)
-  compute_somerank(data, :ps)
-end
-
-def compute_pbrank(data)
-  compute_somerank(data, :pb)
-end
-
-def compute_pfcfrank(data)
-  compute_somerank(data, :pfcf, :p_free_cash_flow)
 end
 
 def compute_bby(data)
-  puts "Computing BBY"
+  progress_bar = ProgressBar.create(title: "Computing BBY", starting_at: 0, total: data.count)
+
   data = data.reject {|stock| stock[:bb].blank? && stock[:market_cap].blank?}
   data.each do |stock|
-    puts stock[:ticker]
     stock[:bby] = -((stock[:bb].to_f/(stock[:market_cap].to_f*1000000))*100)
-    puts "BBY: #{stock[:bby]}"
+    progress_bar.increment
   end
-  puts "Done computing BBY"
 end
 
 def compute_shy(data)
-  puts "Computing SHY"
+  progress_bar = ProgressBar.create(title: "Computing SHY", starting_at: 0, total: data.count)
+
   data.each do |stock|
-    puts stock[:ticker]
     stock[:shy] = 0
-    puts "DY: #{stock[:dividend_yield]}"
-    puts "BBY: #{stock[:bby]}"
 
     unless stock[:dividend_yield].blank?
       stock[:shy] += stock[:dividend_yield].to_f
@@ -272,25 +241,17 @@ def compute_shy(data)
       stock[:shy] += stock[:bby].to_f
     end
 
-    puts "SHY: #{stock["SHY"]}"
+    progress_bar.increment
   end
-  puts "Done computing SHY"
-end
-
-def compute_shyrank(data)
-  compute_somerank(data, :shy, reverse = false)
-end
-
-def compute_evebitdarank(data)
-  compute_somerank(data, :evebitda, filterpositive = true)
 end
 
 def set_mediums(data)
-  puts "Setting Mediums"
+  progress_bar = ProgressBar.create(title: "Setting Mediums", starting_at: 0, total: data.count)
+
   data.each do |stock|
     [:pe, :ps, :pb, :pfcf, :evebitda].each do |key|
       key_rank = "#{key.to_s}_rank".parameterize.underscore.to_sym
-      puts "Key rank: #{key_rank}"
+      # puts "Key rank: #{key_rank}"
       if stock[key_rank].blank?
         stock[key_rank] = 50
       end
@@ -299,28 +260,30 @@ def set_mediums(data)
         stock[:evebitda_rank] = 50
       end
     end
+    progress_bar.increment
   end
-  puts "Done setting Mediums"
 end
 
 def compute_stockrank(data)
-  puts "Computing stock rank"
+  progress_bar = ProgressBar.create(title: "Setting Mediums", starting_at: 0, total: data.count)
+
   data.each do |stock|
-    puts stock[:ticker]
     ranks = [stock[:pe_rank], stock[:ps_rank], stock[:pb_rank], stock[:pfcf_rank], stock[:shy_rank], stock[:evebitda_rank]].map(&:to_f)
 
     # Sum ranks
     stock[:rank] = ranks.inject(:+)
-    puts "Rank: #{stock[:rank]}"
+    progress_bar.increment
   end
 end
 
-def compute_overallrank(data)
-  puts "Computing Overall rank"
-  compute_somerank(data, :ovr, origkey = :rank, reverse = false)
+def create_output_directory
+  date_str = Time.now.strftime('%m_%d_%Y')
+  FileUtils.mkdir_p("output/#{date_str}")
+
+  return date_str
 end
 
-def to_csv(data)
+def to_csv(folder_name, data)
   column_names = data.first.keys
   file =  CSV.generate do |csv|
     csv << column_names
@@ -328,8 +291,63 @@ def to_csv(data)
       csv << stock.values
     end
   end
-  File.write('./csvs/stocks.csv', file)
+  File.write("output/#{folder_name}/stocks.csv", file)
+end
+
+def to_html(folder_name, data, sort_by_rank=true)
+  # HEADER
+  # headers = [:ticker, :company, :sector, :industry, :country, :market_cap, :pe, :ps, :pb, :p_free_cash_flow, :dividend_yield, :performance_half_year, :price, :evebitda, :bb, :pe_rank, :ps_rank, :pb_rank, :pfcf_rank, :bby, :shy, :evebitda_rank, :rank, :ovr_rank]
+  headers = [:ticker, :company, :sector, :market_cap, :dividend_yield, :price, :rank, :ovr_rank]
+
+  # TABLE
+  data = data.reject {|stock| stock[:rank].blank? }
+  data = data.sort_by { |stock| !stock[:rank] }
+
+  xm = Builder::XmlMarkup.new(:indent => 2)
+  xm.head {
+    xm.link(:href => "http://cdn.datatables.net/1.10.2/css/jquery.dataTables.min.css", :rel => "stylesheet", :type => "text/css")
+    xm.script(:src => "http://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.1/jquery.min.js", :type => "text/javascript") {}
+    xm.script(:src => "http://cdn.datatables.net/1.10.2/js/jquery.dataTables.min.js", :type => "text/javascript") {}
+    xm.script("$(document).ready(function(){ $('#stock_table').dataTable({'paging': false, 'order': [[ 9, 'desc' ]]}); });")
+  }
+  xm.body {
+    xm.table(:class => 'display compact', :id => 'stock_table', :cellspacing => "0", :width => "100%") {
+      xm.thead {
+        xm.tr {
+          xm.th("G")
+          xm.th("Y")
+          headers.each { |key|
+            xm.th(key.to_s.upcase)
+          }
+        }
+      }
+      xm.tbody {
+        data.each { |row|
+          xm.tr {
+            xm.td {
+              xm.a(:href => "https://www.google.com/finance?q=#{row[:ticker]}", :target => "_blank") { xm.text("G") }
+            }
+            xm.td {
+              xm.a(:href => "http://finance.yahoo.com/q?d=t&s=#{row[:ticker]}", :target => "_blank") { xm.text("Y") }
+            }
+            headers.each { |key|
+              xm.td(row[key].present? ? row[key] : " ")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  File.write("output/#{folder_name}/stocks.html", xm)
 end
 
 # Do the script!
-generate_snapshot_to_csv()
+
+@stocks = []
+generate_snapshot(@stocks)
+
+new_folder = create_output_directory
+
+# to_csv(new_folder, @stocks)
+to_html(new_folder, @stocks)

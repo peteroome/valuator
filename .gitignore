@@ -14,4 +14,4 @@
 # Ignore all logfiles and tempfiles.
 /log/*.log
 /tmp
-/csvs
+/output
