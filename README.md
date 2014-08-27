@@ -13,6 +13,8 @@ Install the required gems.
 ### Credits
 I'm [@zoltarSpeaks](http://twitter.com/zoltarspeaks) on Twitter.
 
+There is [a more detailed post about this script](http://www.peteroome.com/2014/05/11/valuator-a-ruby-script-to-help-pick-trending-value-stocks.html) on my blog.
+
 This script is based on the [Python script](https://github.com/fuligginoso/trending-value) by [@fuligginoso](http://blog.nmr.io/).
 
 Inspiration taken from this post on Reddit: ["How do you select stocks" (cont'd) - Trending Value, see how your stocks are rated](http://www.reddit.com/r/investing/comments/1eyx3r/how_do_you_select_stocks_contd_trending_value_see/).
