@@ -1,10 +1,9 @@
 # A sample Gemfile
 source "https://rubygems.org"
 
-gem 'activesupport'
+gem 'activesupport', '~> 4.2.1'
 gem 'httparty'
 gem 'nokogiri'
-gem 'pry'
 gem 'ruby-progressbar'
 gem 'thread'
 gem 'builder'

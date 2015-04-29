@@ -1,3 +1,23 @@
+# Notes
+# List of all US companies:
+# http://www.nasdaq.com/screening/companies-by-name.aspx?letter=0&exchange=nasdaq&render=download
+# exchange param can be: nasdaq, nyse etc
+#
+# Stockmapper
+# http://prototypes.stockmapper.com/NYXtrac.html
+#
+# Yahoo Finance Info
+# http://www.jarloo.com/yahoo_finance/
+#
+# Tradier
+# https://developer.tradier.com/documentation/markets/fundamentals/get-ratios
+#
+# Quandl - Historical data
+# https://www.quandl.com/data/WIKI?keyword=&page=1
+#
+# Quantopian - Algo-trading
+# https://www.quantopian.com/algorithms
+
 require 'rubygems'
 require 'active_support/inflector'
 require 'active_support/core_ext'
@@ -6,7 +26,6 @@ require 'nokogiri'
 require 'csv'
 require 'open-uri'
 require 'active_support'
-require 'pry'
 require 'fileutils'
 require 'ruby-progressbar'
 require 'thread/pool'
@@ -21,36 +40,43 @@ def generate_snapshot(data)
 end
 
 def import_finviz(processed_stocks)
-  # not using f=cap_smallover since it filters market caps over 300M instead of 200M
-  # r = requests.get('http://finviz.com/export.ashx?v=152', cookies={"screenerUrl": "screener.ashx?v=152&f=cap_smallover&ft=4", "customTable": "0,1,2,6,7,10,11,13,14,45,65"})
-  # r = requests.get('http://finviz.com/export.ashx?v=152', cookies={"screenerUrl": "screener.ashx?v=152&ft=4", "customTable": "0,1,2,6,7,10,11,13,14,45,65"})
+  # Original request:
+  # http://finviz.com/export.ashx?v=152&ft=4&c=0,1,2,3,4,5,6,7,10,11,13,14,45,65
+  #
+  # The URL is not using `f=cap_smallover` 
+  # since it filters market caps over 300M instead of 200M.
+  # Need to double check data for market cap size > 200M.
+  #
+  # Data feed:
+  # https://www.kimonolabs.com/api/57h4b1oq?apikey=0c8d49caa3f0d6c3b3c35d9d0d872cc7
 
   begin
-    url = 'http://finviz.com/export.ashx?v=152&ft=4&c=0,1,2,3,4,5,6,7,10,11,13,14,45,65'
+    url = "https://www.kimonolabs.com/api/57h4b1oq?apikey=0c8d49caa3f0d6c3b3c35d9d0d872cc7"
     response = HTTParty.get(url)
-    response = CSV.parse(response.body)
+    response = JSON.parse(response.body)
+    response = response["results"]["collection1"]
 
-    keys = response.delete_at(0).collect { |k| k.parameterize.underscore.to_sym }
-    response = response.map {|a| Hash[keys.zip(a)] }
+    # keys = response.delete_at(0).collect { |k| k.parameterize.underscore.to_sym }
+    # response = response.map {|a| Hash[keys.zip(a)] }
 
-    response.each do |row|
+    response["results"]["collection1"].each do |row|
       # Field labels
       # [:no, :ticker, :company, :sector, :industry, :country, :market_cap, :p_e, :price]
       unless row[:market_cap].to_f < 200
         processed_stocks << {
-          ticker:                 row[:ticker],
-          company:                row[:company],
-          sector:                 row[:sector],
-          industry:               row[:industry],
-          country:                row[:country],
-          market_cap:             row[:market_cap],
-          pe:                     row[:p_e].to_f,
-          ps:                     row[:p_s].to_f,
-          pb:                     row[:p_b].to_f,
-          p_free_cash_flow:       row[:p_free_cash_flow].to_f,
-          dividend_yield:         row[:dividend_yield].to_s.gsub("%", "").to_f,
-          performance_half_year:  row[:performance_half_year].to_s.gsub("%", "").to_f,
-          price:                  row[:price].to_f
+          ticker:                 row["symbol"]["text"],
+          company:                row["company"],
+          sector:                 row["sector"],
+          industry:               row["industry"],
+          country:                row["country"],
+          market_cap:             row["market_cap"],
+          pe:                     row["p/e"].to_f,
+          ps:                     row["p/s"].to_f,
+          pb:                     row["p/b"].to_f,
+          p_free_cash_flow:       row["p/fcf"].to_f,
+          dividend_yield:         row["dividend"].to_s.gsub("%", "").to_f,
+          performance_half_year:  row["perf_half"].to_s.gsub("%", "").to_f,
+          price:                  row["price"].to_f
         }
       end
     end
@@ -297,7 +323,7 @@ end
 def to_html(folder_name, data, sort_by_rank=true)
   # HEADER
   # headers = [:ticker, :company, :sector, :industry, :country, :market_cap, :pe, :ps, :pb, :p_free_cash_flow, :dividend_yield, :performance_half_year, :price, :evebitda, :bb, :pe_rank, :ps_rank, :pb_rank, :pfcf_rank, :bby, :shy, :evebitda_rank, :rank, :ovr_rank]
-  headers = [:ticker, :company, :sector, :market_cap, :dividend_yield, :price, :rank, :ovr_rank]
+  headers = [:ticker, :company, :sector, :market_cap, :dividend_yield, :price, :performance_half_year, :rank, :ovr_rank]
 
   # TABLE
   data = data.reject {|stock| stock[:rank].blank? }
@@ -308,12 +334,13 @@ def to_html(folder_name, data, sort_by_rank=true)
     xm.link(:href => "http://cdn.datatables.net/1.10.2/css/jquery.dataTables.min.css", :rel => "stylesheet", :type => "text/css")
     xm.script(:src => "http://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.1/jquery.min.js", :type => "text/javascript") {}
     xm.script(:src => "http://cdn.datatables.net/1.10.2/js/jquery.dataTables.min.js", :type => "text/javascript") {}
-    xm.script("$(document).ready(function(){ $('#stock_table').dataTable({'paging': false, 'order': [[ 9, 'desc' ]]}); });")
+    xm.script("$(document).ready(function(){ $('#stock_table').dataTable({'paging': false, 'order': [[ 11, 'desc' ]]}); });")
   }
   xm.body {
     xm.table(:class => 'display compact', :id => 'stock_table', :cellspacing => "0", :width => "100%") {
       xm.thead {
         xm.tr {
+          xm.th("#")
           xm.th("G")
           xm.th("Y")
           headers.each { |key|
@@ -322,8 +349,11 @@ def to_html(folder_name, data, sort_by_rank=true)
         }
       }
       xm.tbody {
-        data.each { |row|
+        data.each_with_index { |row, index|
           xm.tr {
+            xm.td {
+              xm.text(index)
+            }
             xm.td {
               xm.a(:href => "https://www.google.com/finance?q=#{row[:ticker]}", :target => "_blank") { xm.text("G") }
             }
@@ -349,5 +379,5 @@ generate_snapshot(@stocks)
 
 new_folder = create_output_directory
 
-# to_csv(new_folder, @stocks)
+to_csv(new_folder, @stocks)
 to_html(new_folder, @stocks)
