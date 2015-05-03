@@ -19,13 +19,13 @@
 # https://www.quantopian.com/algorithms
 
 require 'rubygems'
-require 'active_support/inflector'
+require 'active_support'
+# require 'active_support/inflector'
 require 'active_support/core_ext'
 require 'httparty'
 require 'nokogiri'
 require 'csv'
 require 'open-uri'
-require 'active_support'
 require 'fileutils'
 require 'ruby-progressbar'
 require 'thread/pool'
@@ -50,90 +50,97 @@ def import_finviz(processed_stocks)
   # Data feed:
   # https://www.kimonolabs.com/api/57h4b1oq?apikey=0c8d49caa3f0d6c3b3c35d9d0d872cc7
 
-  begin
-    url = "https://www.kimonolabs.com/api/57h4b1oq?apikey=0c8d49caa3f0d6c3b3c35d9d0d872cc7"
-    response = HTTParty.get(url)
-    response = JSON.parse(response.body)
-    response = response["results"]["collection1"]
+  # Paginate through results
+  #
+  response = get_finviz_stocks
 
-    # keys = response.delete_at(0).collect { |k| k.parameterize.underscore.to_sym }
-    # response = response.map {|a| Hash[keys.zip(a)] }
-
-    response["results"]["collection1"].each do |row|
-      # Field labels
-      # [:no, :ticker, :company, :sector, :industry, :country, :market_cap, :p_e, :price]
-      unless row[:market_cap].to_f < 200
-        processed_stocks << {
-          ticker:                 row["symbol"]["text"],
-          company:                row["company"],
-          sector:                 row["sector"],
-          industry:               row["industry"],
-          country:                row["country"],
-          market_cap:             row["market_cap"],
-          pe:                     row["p/e"].to_f,
-          ps:                     row["p/s"].to_f,
-          pb:                     row["p/b"].to_f,
-          p_free_cash_flow:       row["p/fcf"].to_f,
-          dividend_yield:         row["dividend"].to_s.gsub("%", "").to_f,
-          performance_half_year:  row["perf_half"].to_s.gsub("%", "").to_f,
-          price:                  row["price"].to_f
-        }
-      end
+  # Convert market caps to real numbers
+  response.map { |s| 
+    if s["market_cap"][-1] == "B"
+      s["market_cap"] = s["market_cap"].to_f * 1_000_000_000
+    elsif s["market_cap"][-1] == "M"
+      s["market_cap"] = s["market_cap"].to_f * 1_000_000
+    else
+      s["market_cap"] = s["market_cap"].to_f
     end
-    puts "Finviz data imported (#{processed_stocks.count} stocks)"
-  rescue Exception => e
-    puts e.message
-    puts e.backtrace.inspect
+  }
+
+  # Only those over 200M Market Cap
+  response = response.delete_if { |s| s["market_cap"] < 200_000_000 }
+
+  response.each do |row|
+    # Field labels
+    # [:no, :ticker, :company, :sector, :industry, :country, :market_cap, :p_e, :price]
+    processed_stocks << {
+      ticker:                row["symbol"]["text"],
+      company:               row["company"],
+      sector:                row["sector"],
+      industry:              row["industry"],
+      country:               row["country"],
+      market_cap:            row["market_cap"],
+      pe:                    row["p/e"].to_f,
+      ps:                    row["p/s"].to_f,
+      pb:                    row["p/b"].to_f,
+      p_free_cash_flow:      row["p/fcf"].to_f,
+      dividend_yield:        row["dividend"].to_s.gsub("%", "").to_f,
+      performance_half_year: row["perf_half"].to_s.gsub("%", "").to_f,
+      price:                 row["price"].to_f
+    }
   end
+  puts "Finviz data imported (#{processed_stocks.count} stocks)"
+end
+
+def get_finviz_stocks(current_page = 0, results = [])
+  url = "https://kimonolabs.com/api/57h4b1oq?apikey=0c8d49caa3f0d6c3b3c35d9d0d872cc7&kimoffset=#{current_page}"
+  puts "URL: #{url}"
+  response = HTTParty.get(url)
+  response = JSON.parse(response.body)
+  puts "COUNT: #{response["count"]}"
+  if response["count"] > 0
+    response["results"]["collection1"].each do |stock|
+      results << stock
+    end
+    get_finviz_stocks(current_page + 2500, results)
+  end  
+  return results
 end
 
 def import_single_buyback_yield(stock)
   done = false
   while done == false
-    begin
-      # puts stock[:ticker]
-      return if stock[:market_cap].blank?
-      query = "http://finance.yahoo.com/q/cf?s=#{stock[:ticker]}&ql=1"
-      response = HTTParty.get(query)
-      html = Nokogiri::HTML(response)
+    query = "http://finance.yahoo.com/q/cf?s=#{stock[:ticker]}&ql=1"
+    response = HTTParty.get(query)
+    html = Nokogiri::HTML(response)
 
-      # Repair html
-      table = html.css('table.yfnc_tabledata1')[0]
-      return unless table
+    # Repair html
+    table = html.css('table.yfnc_tabledata1')[0]
+    return unless table
 
-      sale = 0
-      rows = table.css("tr")
+    sale = 0
+    rows = table.css("tr")
 
-      rows.each do |tr|
-        title = tr.css("td")[0].text.squeeze.strip
-        if title == "Sale Purchase of Stock"
-          data = tr.css("td")
-          data.each do |data|
-            val = data.text.strip
-            val = val.gsub("(", "-")
-            val = val.gsub(",", "")
-            val = val.gsub(")", "")
-            val = val.gsub("&nbsp;", "")
-            val = val.gsub("\n", "")
-            val = val.gsub("\t", "")
-            val = val.gsub("\\n", "")
-            val = val.gsub(" ", "")
+    rows.each do |tr|
+      title = tr.css("td")[0].text.squeeze.strip
+      if title == "Sale Purchase of Stock"
+        data = tr.css("td")
+        data.each do |data|
+          val = data.text.strip
+          val = val.gsub("(", "-")
+          val = val.gsub(",", "")
+          val = val.gsub(")", "")
+          val = val.gsub("&nbsp;", "")
+          val = val.gsub("\n", "")
+          val = val.gsub("\t", "")
+          val = val.gsub("\\n", "")
+          val = val.gsub(" ", "")
 
-            return if val == "-"
-            sale += val.to_i*1000
-          end
+          return if val == "-"
+          sale += val.to_i*1000
         end
-
-        stock[:bb] = -sale
-        # puts "BB: #{stock[:ticker]} - #{stock[:bb]}"
-        done = true
       end
-    rescue Exception => e
-      puts e.message
-      puts e.backtrace.inspect
 
-      puts "Trying again in 1 sec"
-      sleep 1
+      stock[:bb] = -sale
+      done = true
     end
   end
 end
@@ -147,7 +154,6 @@ def import_buyback_yield(data, threaded = true)
     data.each do |stock|
       pool.process {
         progress_bar.increment
-
         import_single_buyback_yield(stock)
       }
     end
@@ -155,7 +161,6 @@ def import_buyback_yield(data, threaded = true)
   else
     data.each do |stock|
       progress_bar.increment
-
       import_single_buyback_yield(stock)
     end
   end
@@ -209,33 +214,28 @@ def compute_rank(data, step = 0)
   compute_somerank(data, :pfcf, :p_free_cash_flow)
   compute_bby(data)
   compute_shy(data)
-  compute_somerank(data, :shy, reverse = false)
-  compute_somerank(data, :evebitda, filterpositive = true)
+  compute_somerank(data, :shy, nil, false)
+  compute_somerank(data, :evebitda, nil, true, true)
   set_mediums(data)
   compute_stockrank(data)
-  compute_somerank(data, :ovr, origkey = :rank, reverse = false)
+  compute_somerank(data, :ovr, :rank, false)
 end
 
+# `reverse = true` means that low values get a high rank
 def compute_somerank(data, key, origkey = nil, reverse = true, filterpositive = false)
   origkey = key if origkey.nil?
 
   # reject nil values
-  data = data.reject {|stock| stock[origkey].blank? && (filterpositive == false || stock[origkey] >= 0) }
+  data = data.reject {|stock| stock[origkey].blank? and (filterpositive or stock[origkey] < 0)}
   data = data.sort_by! { |k| k[origkey] }
   data.reverse! if reverse == true
 
   amount = data.length
-
   progress_bar = ProgressBar.create(title: "Computing #{key.upcase} Rank", starting_at: 0, total: data.count)
 
   i = 0
-  value = nil
-
   data.each do |stock|
-    if stock[origkey] != value
-      last_rank = i
-      value = stock[origkey]
-    end
+    last_rank = i unless stock[origkey].blank?
     new_key = "#{key.to_s}_rank".parameterize.underscore.to_sym
     stock[new_key] = (last_rank.to_f / amount.to_f)*100
     i += 1
@@ -246,9 +246,9 @@ end
 def compute_bby(data)
   progress_bar = ProgressBar.create(title: "Computing BBY", starting_at: 0, total: data.count)
 
-  data = data.reject {|stock| stock[:bb].blank? && stock[:market_cap].blank?}
+  data = data.reject {|stock| stock[:bb].blank?}
   data.each do |stock|
-    stock[:bby] = -((stock[:bb].to_f/(stock[:market_cap].to_f*1000000))*100)
+    stock[:bby] = -((stock[:bb].to_f/stock[:market_cap])*100)
     progress_bar.increment
   end
 end
@@ -275,9 +275,8 @@ def set_mediums(data)
   progress_bar = ProgressBar.create(title: "Setting Mediums", starting_at: 0, total: data.count)
 
   data.each do |stock|
-    [:pe, :ps, :pb, :pfcf, :evebitda].each do |key|
+    [:pe, :ps, :pb, :pfcf, :shy, :evebitda].each do |key|
       key_rank = "#{key.to_s}_rank".parameterize.underscore.to_sym
-      # puts "Key rank: #{key_rank}"
       if stock[key_rank].blank?
         stock[key_rank] = 50
       end
@@ -286,12 +285,13 @@ def set_mediums(data)
         stock[:evebitda_rank] = 50
       end
     end
+
     progress_bar.increment
   end
 end
 
 def compute_stockrank(data)
-  progress_bar = ProgressBar.create(title: "Setting Mediums", starting_at: 0, total: data.count)
+  progress_bar = ProgressBar.create(title: "Compute Stockrank", starting_at: 0, total: data.count)
 
   data.each do |stock|
     ranks = [stock[:pe_rank], stock[:ps_rank], stock[:pb_rank], stock[:pfcf_rank], stock[:shy_rank], stock[:evebitda_rank]].map(&:to_f)
@@ -320,21 +320,23 @@ def to_csv(folder_name, data)
   File.write("output/#{folder_name}/stocks.csv", file)
 end
 
-def to_html(folder_name, data, sort_by_rank=true)
+def to_html(folder_name, data, orderBy = :rank, filename_ext = nil)
   # HEADER
-  # headers = [:ticker, :company, :sector, :industry, :country, :market_cap, :pe, :ps, :pb, :p_free_cash_flow, :dividend_yield, :performance_half_year, :price, :evebitda, :bb, :pe_rank, :ps_rank, :pb_rank, :pfcf_rank, :bby, :shy, :evebitda_rank, :rank, :ovr_rank]
-  headers = [:ticker, :company, :sector, :market_cap, :dividend_yield, :price, :performance_half_year, :rank, :ovr_rank]
+  headers = [:ticker, :company, :sector, :industry, :country, :market_cap, :p_free_cash_flow, :dividend_yield, :performance_half_year, :price, :bb, :bby, :shy, :pe, :pe_rank, :ps, :ps_rank, :pb, :pb_rank, :pfcf, :pfcf_rank, :shy, :shy_rank, :evebitda, :evebitda_rank, :rank, :ovr_rank]
+  # headers = [:ticker, :company, :sector, :market_cap, :dividend_yield, :price, :performance_half_year, :rank, :ovr_rank]
 
   # TABLE
-  data = data.reject {|stock| stock[:rank].blank? }
-  data = data.sort_by { |stock| !stock[:rank] }
+  data = data.reject {|stock| stock[:ovr_rank].blank? }
+  data = data.sort_by { |stock| !stock[:ovr_rank] }
 
-  xm = Builder::XmlMarkup.new(:indent => 2)
+  tableOrder = headers.index(orderBy) + 3
+
+  xm = Builder::XmlMarkup.new(indent: 2)
   xm.head {
-    xm.link(:href => "http://cdn.datatables.net/1.10.2/css/jquery.dataTables.min.css", :rel => "stylesheet", :type => "text/css")
-    xm.script(:src => "http://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.1/jquery.min.js", :type => "text/javascript") {}
-    xm.script(:src => "http://cdn.datatables.net/1.10.2/js/jquery.dataTables.min.js", :type => "text/javascript") {}
-    xm.script("$(document).ready(function(){ $('#stock_table').dataTable({'paging': false, 'order': [[ 11, 'desc' ]]}); });")
+    xm.link(href: "http://cdn.datatables.net/1.10.2/css/jquery.dataTables.min.css", rel: "stylesheet", type: "text/css")
+    xm.script(src: "http://cdnjs.cloudflare.com/ajax/libs/jquery/2.1.1/jquery.min.js", type: "text/javascript") {}
+    xm.script(src: "http://cdn.datatables.net/1.10.2/js/jquery.dataTables.min.js", type: "text/javascript") {}
+    xm.script("$(document).ready(function(){ $('#stock_table').dataTable({'paging': false, 'order': [[ #{tableOrder}, 'desc' ]]}); });")
   }
   xm.body {
     xm.table(:class => 'display compact', :id => 'stock_table', :cellspacing => "0", :width => "100%") {
@@ -355,10 +357,10 @@ def to_html(folder_name, data, sort_by_rank=true)
               xm.text(index)
             }
             xm.td {
-              xm.a(:href => "https://www.google.com/finance?q=#{row[:ticker]}", :target => "_blank") { xm.text("G") }
+              xm.a(href: "https://www.google.com/finance?q=#{row[:ticker]}", target: "_blank") { xm.text("G") }
             }
             xm.td {
-              xm.a(:href => "http://finance.yahoo.com/q?d=t&s=#{row[:ticker]}", :target => "_blank") { xm.text("Y") }
+              xm.a(href: "http://finance.yahoo.com/q?d=t&s=#{row[:ticker]}", target: "_blank") { xm.text("Y") }
             }
             headers.each { |key|
               xm.td(row[key].present? ? row[key] : " ")
@@ -369,11 +371,13 @@ def to_html(folder_name, data, sort_by_rank=true)
     }
   }
 
-  File.write("output/#{folder_name}/stocks.html", xm)
+  # Write file
+  filename = "output/#{folder_name}/stocks"
+  filename += "-#{filename_ext}" unless filename_ext.nil?
+  File.write("#{filename}.html", xm)
 end
 
 # Do the script!
-
 @stocks = []
 generate_snapshot(@stocks)
 
@@ -381,3 +385,16 @@ new_folder = create_output_directory
 
 to_csv(new_folder, @stocks)
 to_html(new_folder, @stocks)
+
+# Picks
+#
+# Top Decile ordered by :ovr_rank
+@stocks = @stocks.sort_by { |stock| !stock[:ovr_rank] }[0, (@stocks.length*0.1).ceil]
+to_html(new_folder, @stocks, :ovr_rank, "decile")
+
+# Reject if less than 420
+@stocks = @stocks.reject {|stock| stock[:rank] < 400}
+
+# Top 25 ordered by :performance_half_year
+@stocks = @stocks.sort_by { |stock| !stock[:performance_half_year] }[0, 25]
+to_html(new_folder, @stocks, :performance_half_year, "picks")
